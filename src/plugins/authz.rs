@@ -79,7 +79,7 @@ impl Plugin for Authz {
     }
 }
 
-type RequiredScopes<'a> = (HashSet<&'a str>, bool);
+type RequiredScopes<'a> = (HashSet<String>, bool);
 
 fn collect_required_scopes(
     ctx: ApolloCompiler,
@@ -89,21 +89,23 @@ fn collect_required_scopes(
         .operation_by_name(operation_name)
         .expect("operation exists");
 
-    let mut claims: HashSet<&str> = HashSet::new();
+    let mut claims = HashSet::new();
 
-    fn recurse_selections<'a>(
-        selections: &'a [Selection],
+    fn recurse_selections(
+        selections: &[Selection],
         ctx: &ApolloCompiler,
-        claims: &mut HashSet<&'a str>,
+        claims: &mut HashSet<String>,
     ) {
         for selection in selections {
             match selection {
                 Selection::Field(f) => {
-                    f.directives()
-                        .iter()
+                    let directives = f.directives().to_vec();
+
+                    directives
+                        .into_iter()
                         .filter(|d| d.name() == "authz")
                         .for_each(|d| {
-                            claims.insert(d.name());
+                            claims.insert(d.name().to_string());
                         });
                     recurse_selections(f.selection_set().selection(), ctx, claims);
                 }
@@ -122,7 +124,7 @@ fn collect_required_scopes(
 
     recurse_selections(operation.selection_set().selection(), &ctx, &mut claims);
 
-    Ok((claims.clone(), false))
+    Ok((claims, false))
 }
 
 pub trait CompilerAdditions {
