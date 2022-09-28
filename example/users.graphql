@@ -1,0 +1,22 @@
+extend schema
+  @link(url: "https://specs.apollo.dev/link/v1.0", import: ["Purpose"])
+  @link(
+    url: "https://specs.apollo.dev/federation/v2.0"
+    import: ["@key", "@composeDirective"]
+  )
+  @link(url: "https://specs.router-authz.dev/authz/v1.0", for: EXECUTION)
+  @composeDirective(name: "@authz")
+
+# TODO repeatable
+directive @authz(scope: [String!]) on FIELD_DEFINITION | INPUT_FIELD_DEFINITION
+
+type Query {
+  me: User @authz
+  users: [User] @authz(scope: "ADMIN")
+}
+
+type User @key(fields: "id") {
+  id: ID!
+  name: String
+  privateData: String @authz(scope: "ADMIN")
+}

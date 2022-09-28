@@ -1,0 +1,88 @@
+schema
+  @link(url: "https://specs.apollo.dev/link/v1.0")
+  @link(url: "https://specs.apollo.dev/join/v0.2", for: EXECUTION)
+  @link(url: "https://specs.router-authz.dev/authz/v1.0", import: ["@authz"])
+{
+  query: Query
+  mutation: Mutation
+}
+
+directive @authz(scope: [String!]) on FIELD_DEFINITION | INPUT_FIELD_DEFINITION
+
+directive @join__field(graph: join__Graph!, requires: join__FieldSet, provides: join__FieldSet, type: String, external: Boolean, override: String, usedOverridden: Boolean) repeatable on FIELD_DEFINITION | INPUT_FIELD_DEFINITION
+
+directive @join__graph(name: String!, url: String!) on ENUM_VALUE
+
+directive @join__implements(graph: join__Graph!, interface: String!) repeatable on OBJECT | INTERFACE
+
+directive @join__type(graph: join__Graph!, key: join__FieldSet, extension: Boolean! = false, resolvable: Boolean! = true) repeatable on OBJECT | INTERFACE | UNION | ENUM | INPUT_OBJECT | SCALAR
+
+directive @link(url: String, as: String, for: link__Purpose, import: [link__Import]) repeatable on SCHEMA
+
+type EditProductPayload
+  @join__type(graph: PRODUCTS)
+{
+  success: Boolean!
+  product: Product
+}
+
+scalar join__FieldSet
+
+enum join__Graph {
+  PRODUCTS @join__graph(name: "products", url: "http://localhost:4001/")
+  USERS @join__graph(name: "users", url: "http://localhost:4002/")
+}
+
+scalar link__Import
+
+enum link__Purpose {
+  """
+  `SECURITY` features provide metadata necessary to securely resolve fields.
+  """
+  SECURITY
+
+  """
+  `EXECUTION` features provide metadata necessary for operation execution.
+  """
+  EXECUTION
+}
+
+type Mutation
+  @join__type(graph: PRODUCTS)
+{
+  editProduct(input: ProductInput): EditProductPayload @authz(scope: ["ADMIN", "EDITOR"])
+}
+
+type Product
+  @join__type(graph: PRODUCTS, key: "id")
+{
+  id: ID!
+  name: String
+  price: String
+  inventory: Int @authz(scope: "ADMIN")
+}
+
+input ProductInput
+  @join__type(graph: PRODUCTS)
+{
+  name: String
+  price: String @authz(scope: ["ADMIN", "EDITOR"])
+  inventory: Int @authz(scope: ["ADMIN"])
+}
+
+type Query
+  @join__type(graph: PRODUCTS)
+  @join__type(graph: USERS)
+{
+  products: [Product] @join__field(graph: PRODUCTS)
+  me: User @join__field(graph: USERS) @authz
+  users: [User] @join__field(graph: USERS) @authz(scope: "ADMIN")
+}
+
+type User
+  @join__type(graph: USERS, key: "id")
+{
+  id: ID!
+  name: String
+  privateData: String @authz(scope: "ADMIN")
+}
