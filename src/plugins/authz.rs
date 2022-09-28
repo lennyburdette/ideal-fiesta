@@ -5,7 +5,6 @@ use std::sync::Arc;
 use anyhow::Result;
 use apollo_compiler::values::OperationDefinition;
 use apollo_compiler::values::Selection;
-use apollo_compiler::values::SelectionSet;
 use apollo_compiler::ApolloCompiler;
 use apollo_router::layers::ServiceBuilderExt;
 use apollo_router::plugin::Plugin;
@@ -107,15 +106,15 @@ fn collect_required_scopes(
                         .for_each(|d| {
                             claims.insert(d.name().to_string());
                         });
-                    recurse_selections(f.selection_set().selection(), ctx, claims)
+                    recurse_selections(f.selection_set().selection(), ctx, claims);
                 }
                 Selection::FragmentSpread(f) => {
                     if let Some(fragment) = f.fragment(&ctx.db) {
-                        recurse_selections(fragment.selection_set().selection(), ctx, claims)
+                        recurse_selections(fragment.selection_set().selection(), ctx, claims);
                     }
                 }
                 Selection::InlineFragment(f) => {
-                    recurse_selections(f.selection_set().selection(), ctx, claims)
+                    recurse_selections(f.selection_set().selection(), ctx, claims);
                 }
             }
         }
