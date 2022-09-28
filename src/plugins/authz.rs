@@ -5,6 +5,7 @@ use std::sync::Arc;
 use anyhow::Result;
 use apollo_compiler::values::OperationDefinition;
 use apollo_compiler::values::Selection;
+use apollo_compiler::values::SelectionSet;
 use apollo_compiler::ApolloCompiler;
 use apollo_router::layers::ServiceBuilderExt;
 use apollo_router::plugin::Plugin;
@@ -92,11 +93,12 @@ fn collect_required_scopes(
 
     let mut claims = ClaimSet::new();
 
-    fn recurse_selections<S>(selections: S, ctx: &ApolloCompiler, claims: &mut ClaimSet)
-    where
-        S: Iterator<Item = Selection>,
-    {
-        for selection in selections.into_iter() {
+    fn recurse_selections<'a>(
+        selections: &'a [Selection],
+        ctx: &ApolloCompiler,
+        claims: &mut ClaimSet,
+    ) {
+        for selection in selections {
             match selection {
                 Selection::Field(f) => {
                     f.directives()
@@ -105,26 +107,21 @@ fn collect_required_scopes(
                         .for_each(|d| {
                             claims.insert(d.name().to_string());
                         });
-                    recurse_selections(f.selection_set().selection().iter().cloned(), ctx, claims);
+                    recurse_selections(f.selection_set().selection(), ctx, claims)
                 }
                 Selection::FragmentSpread(f) => {
                     if let Some(fragment) = f.fragment(&ctx.db) {
-                        let s = fragment.selection_set();
-                        recurse_selections(s.selection().iter().cloned(), ctx, claims);
+                        recurse_selections(fragment.selection_set().selection(), ctx, claims)
                     }
                 }
                 Selection::InlineFragment(f) => {
-                    recurse_selections(f.selection_set().selection().iter().cloned(), ctx, claims);
+                    recurse_selections(f.selection_set().selection(), ctx, claims)
                 }
             }
         }
     }
 
-    recurse_selections(
-        operation.selection_set().selection().iter().cloned(),
-        &ctx,
-        &mut claims,
-    );
+    recurse_selections(operation.selection_set().selection(), &ctx, &mut claims);
 
     Ok((claims, false))
 }
