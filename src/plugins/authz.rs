@@ -3,9 +3,13 @@ use std::ops::ControlFlow;
 use std::sync::Arc;
 
 use anyhow::Result;
+use apollo_compiler::values::Directive;
+use apollo_compiler::values::FieldDefinition;
 use apollo_compiler::values::OperationDefinition;
 use apollo_compiler::values::Selection;
+use apollo_compiler::values::Value;
 use apollo_compiler::ApolloCompiler;
+use apollo_router::graphql;
 use apollo_router::layers::ServiceBuilderExt;
 use apollo_router::plugin::Plugin;
 use apollo_router::plugin::PluginInit;
@@ -14,8 +18,13 @@ use apollo_router::services::execution;
 use apollo_router::services::subgraph;
 use apollo_router::services::supergraph;
 use apollo_router::services::supergraph::Request;
+use http::HeaderMap;
+use http::HeaderValue;
+use jsonwebtoken::Algorithm;
+use jsonwebtoken::DecodingKey;
+use jsonwebtoken::Validation;
 use schemars::JsonSchema;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use tower::BoxError;
 use tower::{ServiceBuilder, ServiceExt};
 
@@ -33,6 +42,7 @@ struct Conf {
     // otherwise the yaml to enable the plugin will be confusing.
     message: String,
 }
+
 // This is a bare bones plugin that can be duplicated when creating your own.
 #[async_trait::async_trait]
 impl Plugin for Authz {
@@ -59,8 +69,57 @@ impl Plugin for Authz {
                 let operation_name = req.supergraph_request.body().operation_name.as_deref();
                 let compiler = ApolloCompiler::new(format!("{}\n{}", sdl, operation).as_str());
 
-                let claims = collect_required_scopes(compiler, operation_name);
-                dbg!(claims);
+                let required = collect_required_scopes(compiler, operation_name)?;
+                let token = authorization_token(req.supergraph_request.headers())?;
+
+                if !required.requires_auth {
+                    return Ok(ControlFlow::Continue(req));
+                }
+
+                if required.requires_auth && token.is_none() {
+                    let res = supergraph::Response::error_builder()
+                        .error(
+                            graphql::Error::builder()
+                                .message("authentication required")
+                                .build(),
+                        )
+                        .context(req.context)
+                        .build()?;
+                    return Ok(ControlFlow::Break(res));
+                }
+
+                #[derive(Debug, Serialize, Deserialize)]
+                struct Claims {
+                    scopes: HashSet<String>,
+                }
+
+                let jwt = jsonwebtoken::decode::<Claims>(
+                    token.expect("qed").as_str(),
+                    &DecodingKey::from_secret("12345".as_ref()),
+                    &Validation::new(Algorithm::HS256),
+                )?;
+
+                let missing_required_scopes: HashSet<_> =
+                    required.scopes.difference(&jwt.claims.scopes).collect();
+
+                if !missing_required_scopes.is_empty() {
+                    let res = supergraph::Response::error_builder()
+                        .error(
+                            graphql::Error::builder()
+                                .message(format!(
+                                    "missing required scopes: {}",
+                                    missing_required_scopes
+                                        .into_iter()
+                                        .map(|s| s.to_owned())
+                                        .collect::<Vec<_>>()
+                                        .join(", ")
+                                ))
+                                .build(),
+                        )
+                        .context(req.context)
+                        .build()?;
+                    return Ok(ControlFlow::Break(res));
+                }
 
                 Ok(ControlFlow::Continue(req))
             })
@@ -79,7 +138,30 @@ impl Plugin for Authz {
     }
 }
 
-type RequiredScopes<'a> = (HashSet<&'a str>, bool);
+fn authorization_token(headers: &HeaderMap<HeaderValue>) -> Result<Option<String>> {
+    let value = headers.get("Authorization");
+
+    let value = match value {
+        Some(v) => v,
+        None => return Ok(None),
+    };
+
+    let value = value.to_str()?;
+
+    if value.starts_with("Bearer ") {
+        return Ok(value.split(" ").last().map(|s| s.to_string()));
+    }
+
+    Ok(None)
+}
+
+type ScopeSet = HashSet<String>;
+
+#[derive(Default)]
+struct RequiredScopes {
+    scopes: ScopeSet,
+    requires_auth: bool,
+}
 
 fn collect_required_scopes(
     ctx: ApolloCompiler,
@@ -89,40 +171,88 @@ fn collect_required_scopes(
         .operation_by_name(operation_name)
         .expect("operation exists");
 
-    let mut claims: HashSet<&str> = HashSet::new();
+    let mut required_scopes = RequiredScopes::default();
 
-    fn recurse_selections<'a>(
-        selections: &'a [Selection],
+    fn recurse_selections(
+        selections: &[Selection],
         ctx: &ApolloCompiler,
-        claims: &mut HashSet<&'a str>,
+        required_scopes: &mut RequiredScopes,
     ) {
         for selection in selections {
             match selection {
                 Selection::Field(f) => {
-                    f.directives()
-                        .iter()
-                        .filter(|d| d.name() == "authz")
-                        .for_each(|d| {
-                            claims.insert(d.name());
-                        });
-                    recurse_selections(f.selection_set().selection(), ctx, claims);
+                    if let Some(def) = f.field_definition(&ctx.db) {
+                        if has_directive(&def, "authz") {
+                            required_scopes.requires_auth = true;
+                        }
+
+                        let scopes = def
+                            .directives()
+                            .iter()
+                            .flat_map(|d| string_argument_values(d, "scope"))
+                            .collect::<Vec<_>>();
+
+                        for scope in scopes {
+                            required_scopes.scopes.insert(scope);
+                        }
+                    }
+
+                    recurse_selections(f.selection_set().selection(), ctx, required_scopes);
                 }
                 Selection::FragmentSpread(f) => {
                     if let Some(fragment) = f.fragment(&ctx.db) {
-                        let s = fragment.selection_set();
-                        recurse_selections(s.selection(), ctx, claims);
+                        recurse_selections(
+                            fragment.selection_set().selection(),
+                            ctx,
+                            required_scopes,
+                        );
                     }
                 }
                 Selection::InlineFragment(f) => {
-                    recurse_selections(f.selection_set().selection(), ctx, claims);
+                    recurse_selections(f.selection_set().selection(), ctx, required_scopes);
                 }
             }
         }
     }
 
-    recurse_selections(operation.selection_set().selection(), &ctx, &mut claims);
+    recurse_selections(
+        operation.selection_set().selection(),
+        &ctx,
+        &mut required_scopes,
+    );
 
-    Ok((claims.clone(), false))
+    Ok(required_scopes)
+}
+
+fn has_directive(f: &FieldDefinition, name: &str) -> bool {
+    for d in f.directives() {
+        if d.name() == name {
+            return true;
+        }
+    }
+    false
+}
+
+fn string_argument_values(d: &Directive, name: &str) -> Vec<String> {
+    d.arguments()
+        .iter()
+        .filter(|a| a.name() == name)
+        .flat_map(|a| value_strings(a.value()))
+        .collect::<Vec<_>>()
+}
+
+fn value_strings(v: &Value) -> Vec<String> {
+    match v {
+        Value::String(s) => vec![s.to_string()],
+        Value::List(ss) => ss
+            .iter()
+            .filter_map(|v| match v {
+                Value::String(s) => Some(s.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>(),
+        _ => vec![],
+    }
 }
 
 pub trait CompilerAdditions {

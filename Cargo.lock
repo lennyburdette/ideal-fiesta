@@ -2983,6 +2983,7 @@ dependencies = [
  "apollo-router",
  "async-trait",
  "futures",
+ "http",
  "jsonwebtoken",
  "schemars",
  "serde",
