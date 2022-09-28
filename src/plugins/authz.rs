@@ -128,7 +128,7 @@ fn collect_required_scopes(
         &mut claims,
     );
 
-    Ok((claims.clone(), false))
+    Ok((claims, false))
 }
 
 pub trait CompilerAdditions {
