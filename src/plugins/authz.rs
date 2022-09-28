@@ -92,7 +92,7 @@ fn collect_required_scopes(
     let mut claims = HashSet::new();
 
     fn recurse_selections(
-        selections: Vec<Selection>,
+        selections: &[Selection],
         ctx: &ApolloCompiler,
         claims: &mut HashSet<String>,
     ) {
@@ -107,26 +107,22 @@ fn collect_required_scopes(
                         .for_each(|d| {
                             claims.insert(d.name().to_string());
                         });
-                    recurse_selections(f.selection_set().selection().to_vec(), ctx, claims);
+                    recurse_selections(f.selection_set().selection(), ctx, claims);
                 }
                 Selection::FragmentSpread(f) => {
                     if let Some(fragment) = f.fragment(&ctx.db) {
                         let s = fragment.selection_set();
-                        recurse_selections(s.selection().to_vec(), ctx, claims);
+                        recurse_selections(s.selection(), ctx, claims);
                     }
                 }
                 Selection::InlineFragment(f) => {
-                    recurse_selections(f.selection_set().selection().to_vec(), ctx, claims);
+                    recurse_selections(f.selection_set().selection(), ctx, claims);
                 }
             }
         }
     }
 
-    recurse_selections(
-        operation.selection_set().selection().to_vec(),
-        &ctx,
-        &mut claims,
-    );
+    recurse_selections(operation.selection_set().selection(), &ctx, &mut claims);
 
     Ok((claims, false))
 }
