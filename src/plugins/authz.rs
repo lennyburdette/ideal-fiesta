@@ -79,7 +79,8 @@ impl Plugin for Authz {
     }
 }
 
-type RequiredScopes<'a> = (HashSet<&'a str>, bool);
+type ClaimSet = HashSet<String>;
+type RequiredScopes = (ClaimSet, bool);
 
 fn collect_required_scopes(
     ctx: ApolloCompiler,
@@ -89,40 +90,43 @@ fn collect_required_scopes(
         .operation_by_name(operation_name)
         .expect("operation exists");
 
-    let mut claims: HashSet<&str> = HashSet::new();
+    let mut claims = ClaimSet::new();
 
-    fn recurse_selections<'a>(
-        selections: &'a [Selection],
-        ctx: &ApolloCompiler,
-        claims: &mut HashSet<&'a str>,
-    ) {
-        for selection in selections {
+    fn recurse_selections<S>(selections: S, ctx: &ApolloCompiler, claims: &mut ClaimSet)
+    where
+        S: Iterator<Item = Selection>,
+    {
+        for selection in selections.into_iter() {
             match selection {
                 Selection::Field(f) => {
                     f.directives()
                         .iter()
                         .filter(|d| d.name() == "authz")
                         .for_each(|d| {
-                            claims.insert(d.name());
+                            claims.insert(d.name().to_string());
                         });
-                    recurse_selections(f.selection_set().selection(), ctx, claims);
+                    recurse_selections(f.selection_set().selection().iter().cloned(), ctx, claims);
                 }
                 Selection::FragmentSpread(f) => {
                     if let Some(fragment) = f.fragment(&ctx.db) {
                         let s = fragment.selection_set();
-                        recurse_selections(s.selection(), ctx, claims);
+                        recurse_selections(s.selection().iter().cloned(), ctx, claims);
                     }
                 }
                 Selection::InlineFragment(f) => {
-                    recurse_selections(f.selection_set().selection(), ctx, claims);
+                    recurse_selections(f.selection_set().selection().iter().cloned(), ctx, claims);
                 }
             }
         }
     }
 
-    recurse_selections(operation.selection_set().selection(), &ctx, &mut claims);
+    recurse_selections(
+        operation.selection_set().selection().iter().cloned(),
+        &ctx,
+        &mut claims,
+    );
 
-    Ok((claims.clone(), false))
+    Ok((claims, false))
 }
 
 pub trait CompilerAdditions {
